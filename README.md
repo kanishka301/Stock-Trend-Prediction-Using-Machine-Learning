@@ -1,1 +1,1 @@
-# Symptom-Driven-Medical-Diagnosis-System-
+Stock Price Trend Prediction Using LSTM RNN
