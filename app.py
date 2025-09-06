@@ -11,10 +11,10 @@ import streamlit as st
 # Streamlit Page Config
 # -------------------------------
 st.set_page_config(page_title="Stock Trend Prediction", layout="wide")
-st.markdown("<h1 style='text-align: center;'>Stock Trend Prediction Using LSTM</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>Stock Trend Prediction Using Stacked LSTM</h1>", unsafe_allow_html=True)
 st.markdown("---")
 
-# Load trained model
+# Load trained stacked LSTM model
 model = load_model("stock_dl_model.h5")
 
 # -------------------------------
@@ -22,7 +22,7 @@ model = load_model("stock_dl_model.h5")
 # -------------------------------
 st.sidebar.header("Settings")
 stock = st.sidebar.text_input("Enter Stock Symbol", "POWERGRID.NS")
-start = st.sidebar.date_input("Start Date", dt.date(2000, 1, 1))
+start = st.sidebar.date_input("Start Date", dt.date(2020, 1, 1))
 end = st.sidebar.date_input("End Date", dt.date(2025, 9, 1))
 
 # -------------------------------
@@ -32,76 +32,103 @@ df = yf.download(stock, start=start, end=end)
 
 if not df.empty:
     # Tabs for navigation
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["Data Overview", "EMA Charts", "Predictions", "Download"]
-    )
+    tab1, tab2, tab3, tab4 = st.tabs(["Data Overview", "EMA Charts", "Predictions", "Download"])
 
     with tab1:
         st.subheader(f"Stock Data for {stock}")
-        st.dataframe(df.tail(10))  # Show last 10 rows
+        st.dataframe(df.tail(10))
         st.subheader("Descriptive Statistics")
         st.write(df.describe())
 
     with tab2:
-        # EMA Calculations
-        ema20 = df.Close.ewm(span=20, adjust=False).mean()
-        ema50 = df.Close.ewm(span=50, adjust=False).mean()
         ema100 = df.Close.ewm(span=100, adjust=False).mean()
         ema200 = df.Close.ewm(span=200, adjust=False).mean()
 
-        # Plot 20 & 50 EMA
         fig1, ax1 = plt.subplots(figsize=(12, 6))
-        ax1.plot(df.Close, 'y', label='Closing Price')
-        ax1.plot(ema20, 'g', label='EMA 20')
-        ax1.plot(ema50, 'r', label='EMA 50')
-        ax1.set_title("Closing Price vs Time (20 & 50 Days EMA)")
+        ax1.plot(df.Close, label='Closing Price', color='yellow')
+        ax1.plot(ema100, label='EMA 100', color='green')
+        ax1.plot(ema200, label='EMA 200', color='red')
+        ax1.set_title("Closing Price vs Time (100 & 200 Days EMA)")
         ax1.legend()
         st.pyplot(fig1)
 
-        # Plot 100 & 200 EMA
+    with tab3:
+        # Prepare data
+        data = df[['Close']]
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = scaler.fit_transform(data)
+
+        training_size = int(len(scaled_data) * 0.70)
+        train_data = scaled_data[:training_size]
+        test_data = scaled_data[training_size:]
+
+        def create_dataset(dataset, time_step=100):
+            x, y = [], []
+            for i in range(time_step, len(dataset)):
+                x.append(dataset[i-time_step:i, 0])
+                y.append(dataset[i, 0])
+            return np.array(x), np.array(y)
+
+        x_train, y_train = create_dataset(train_data)
+        x_test, y_test = create_dataset(test_data)
+
+        x_train = x_train.reshape(x_train.shape[0], x_train.shape[1], 1)
+        x_test = x_test.reshape(x_test.shape[0], x_test.shape[1], 1)
+
+        # Predict
+        y_predicted = model.predict(x_test)
+        y_predicted = scaler.inverse_transform(y_predicted.reshape(-1, 1))
+        y_test = scaler.inverse_transform(y_test.reshape(-1, 1))
+
         fig2, ax2 = plt.subplots(figsize=(12, 6))
-        ax2.plot(df.Close, 'y', label='Closing Price')
-        ax2.plot(ema100, 'g', label='EMA 100')
-        ax2.plot(ema200, 'r', label='EMA 200')
-        ax2.set_title("Closing Price vs Time (100 & 200 Days EMA)")
+        ax2.plot(y_test, label="Original Price", color='green')
+        ax2.plot(y_predicted, label="Predicted Price", color='red')
+        ax2.set_title("Prediction vs Original Trend")
         ax2.legend()
         st.pyplot(fig2)
 
-    with tab3:
-        # Train/Test Split
-        data_training = pd.DataFrame(df['Close'][0:int(len(df)*0.70)])
-        data_testing = pd.DataFrame(df['Close'][int(len(df)*0.70): int(len(df))])
+        # Forecast next 30 days
+        x_input = test_data[-100:].reshape(1, -1)
+        temp_input = list(x_input[0])
+        lst_output = []
 
-        # Scaling
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        data_training_array = scaler.fit_transform(data_training)
+        for i in range(30):
+            x_input = np.array(temp_input[-100:]).reshape(1, 100, 1)
+            yhat = model.predict(x_input, verbose=0)
+            temp_input.append(yhat[0][0])
+            lst_output.append(yhat[0][0])
 
-        # Prepare test data
-        past_100_days = data_training.tail(100)
-        final_df = pd.concat([past_100_days, data_testing], ignore_index=True)
-        input_data = scaler.fit_transform(final_df)
 
-        x_test, y_test = [], []
-        for i in range(100, input_data.shape[0]):
-            x_test.append(input_data[i-100:i])
-            y_test.append(input_data[i, 0])
-        x_test, y_test = np.array(x_test), np.array(y_test)
+            # Combine historical and forecast data
+        last_date = df.index[-1]
+        future_dates = pd.date_range(last_date + pd.Timedelta(days=1), periods=30)
 
-        # Predictions
-        y_predicted = model.predict(x_test)
+        # Create a new DataFrame for plotting
+        forecast_df = pd.DataFrame({
+            'Date': future_dates,
+            'Forecast': scaler.inverse_transform(np.array(lst_output).reshape(-1, 1)).flatten()
+        })
 
-        # Inverse scaling
-        scale_factor = 1 / scaler.scale_[0]
-        y_predicted = y_predicted * scale_factor
-        y_test = y_test * scale_factor
+        # Plot historical + forecast
+        fig4, ax4 = plt.subplots(figsize=(12, 6))
+        ax4.plot(df.index, df['Close'], label="Historical Price", color='blue')
+        ax4.axvline(x=last_date, color='gray', linestyle='--', label='Forecast Start')
+        ax4.plot(forecast_df['Date'], forecast_df['Forecast'], label="30-Day Forecast", color='orange')
+        ax4.set_title("Stock Price with 30-Day Forecast Extension")
+        ax4.set_xlabel("Date")
+        ax4.set_ylabel("Price")
+        ax4.legend()
+        st.pyplot(fig4)
 
-        # Plot Predictions
+
+        future_days = scaler.inverse_transform(np.array(lst_output).reshape(-1, 1))
+
         fig3, ax3 = plt.subplots(figsize=(12, 6))
-        ax3.plot(y_test, 'g', label="Original Price", linewidth=1)
-        ax3.plot(y_predicted, 'r', label="Predicted Price", linewidth=1)
-        ax3.set_title("Prediction vs Original Trend")
+        ax3.plot(future_days, label="Next 30 Days Forecast", color='blue')
+        ax3.set_title("Future Stock Price Forecast")
         ax3.legend()
         st.pyplot(fig3)
+
 
     with tab4:
         csv = df.to_csv().encode("utf-8")
@@ -114,4 +141,4 @@ if not df.empty:
         )
 
 else:
-    st.warning(" No data found for this stock symbol. Please try another.")
+    st.warning("No data found for this stock symbol. Please try another.")
